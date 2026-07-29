@@ -247,11 +247,14 @@
             <Directory Id="gen1ModExport" Name="gen1-mod-export"
                        FileSource="$(var.InstallRoot)\extensions\gen1-mod-export">
               <Component Id="Gen1ModExportExtension" Guid="{3D6D87CA-8E04-4FA2-A7CC-04BFA5A015E9}">
-                <File Name="gen1-core.js" />
-                <File Name="gen1-export-map.js" />
-                <File Name="gen1-export-mod.js" />
-                <File Name="gen1-world.js" />
-                <File Name="README.md" />
+                <!-- Explicit Ids: WiX derives a File Id from the file name
+                     when one is not given, and the sticker-knight example
+                     already contributes a "README.md" symbol. -->
+                <File Id="Gen1Core" Name="gen1-core.js" />
+                <File Id="Gen1ExportMap" Name="gen1-export-map.js" />
+                <File Id="Gen1ExportMod" Name="gen1-export-mod.js" />
+                <File Id="Gen1World" Name="gen1-world.js" />
+                <File Id="Gen1Readme" Name="README.md" />
               </Component>
             </Directory>
           </Directory>
