@@ -243,6 +243,19 @@
               <File Source="$(var.QtDir)\translations\qt_zh_TW.qm"/>
             </Component>
           </Directory>
+          <Directory Id="extensions" Name="extensions">
+            <Directory Id="gen1ModExport" Name="gen1-mod-export"
+                       FileSource="$(var.InstallRoot)\extensions\gen1-mod-export">
+              <Component Id="Gen1ModExportExtension" Guid="{3D6D87CA-8E04-4FA2-A7CC-04BFA5A015E9}">
+                <File Name="gen1-core.js" />
+                <File Name="gen1-export-map.js" />
+                <File Name="gen1-export-mod.js" />
+                <File Name="gen1-world.js" />
+                <File Name="README.md" />
+              </Component>
+            </Directory>
+          </Directory>
+
           <Directory Id="examples" Name="examples" FileSource="$(var.RootDir)\examples">
             <Component Id="Examples" Guid="{AC8FD854-A03C-475D-AE66-64428B43C8D7}">
               <File Name="buch-outdoor.png" />
@@ -414,6 +427,7 @@
       <ComponentRef Id='DesktopShortcut' />
       <ComponentRef Id='Plugins' />
       <ComponentRef Id='Translations' />
+      <ComponentRef Id='Gen1ModExportExtension' />
       <ComponentRef Id='Examples' />
       <ComponentRef Id='AutomappingExample' />
       <ComponentRef Id='StickerKnightExample' />

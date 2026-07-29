@@ -146,6 +146,18 @@ ScriptManager::ScriptManager(QObject *parent)
         if (!QFile::exists(mExtensionsPath))
             QDir().mkpath(mExtensionsPath);
     }
+
+    // Extensions shipped inside the installation itself (see the "Bundled
+    // extensions" group in src/tiledapp/tiledapp.qbs). Laid out the same way
+    // as translations, so the paths mirror LanguageManager's.
+    mBundledExtensionsPath = QCoreApplication::applicationDirPath();
+#if defined(TILED_WINDOWS_LAYOUT)
+    mBundledExtensionsPath += QStringLiteral("/extensions");
+#elif defined(Q_OS_MAC)
+    mBundledExtensionsPath += QStringLiteral("/../Extensions");
+#else
+    mBundledExtensionsPath += QStringLiteral("/../share/tiled/extensions");
+#endif
 }
 
 void ScriptManager::ensureInitialized()
@@ -413,6 +425,15 @@ void ScriptManager::refreshExtensionsPaths()
 
     if (!mExtensionsPath.isEmpty())
         extensionsPaths.append(mExtensionsPath);
+
+    // Extensions shipped with the installation. Unlike project extensions
+    // these need no per-project consent: they are part of the application the
+    // user already chose to install.
+    if (!mBundledExtensionsPath.isEmpty()) {
+        const QFileInfo info(mBundledExtensionsPath);
+        if (info.exists() && info.isDir())
+            extensionsPaths.append(info.canonicalFilePath());
+    }
 
     // Add extensions path from project
     bool projectExtensionsSuppressed = false;

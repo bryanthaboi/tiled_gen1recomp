@@ -1,13 +1,10 @@
 name: Update Homebrew Cask
 
+# Upstream workflow, disabled in this fork: .github/workflows/release.yml is
+# the only thing that runs per commit here. Kept intact (minus its triggers)
+# so merges from mapeditor/tiled stay clean; run it by hand if you need it.
 on:
-  release:
-    types: [released]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag to bump (e.g. v1.11.2). Defaults to the triggering release tag.'
-        required: false
 
 jobs:
   bump-cask:

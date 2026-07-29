@@ -113,6 +113,7 @@ private:
     ScriptModule *mModule = nullptr;
     FileSystemWatcher mWatcher;
     QString mExtensionsPath;
+    QString mBundledExtensionsPath;
     QStringList mExtensionsPaths;
     int mTempCount = 0;
     bool mProjectExtensionsSuppressed = false;

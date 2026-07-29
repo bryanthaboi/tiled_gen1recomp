@@ -1,21 +1,10 @@
 name: "CodeQL"
 
+# Upstream workflow, disabled in this fork: .github/workflows/release.yml is
+# the only thing that runs per commit here. Kept intact (minus its triggers)
+# so merges from mapeditor/tiled stay clean; run it by hand if you need it.
 on:
-  push:
-    branches: [master]
-    paths:
-    - '**.cpp'
-    - '**.h'
-    - '.github/workflows/codeql-analysis.yml'
-  pull_request:
-    # The branches below must be a subset of the branches above
-    branches: [master]
-    paths:
-    - '**.cpp'
-    - '**.h'
-    - '.github/workflows/codeql-analysis.yml'
-  schedule:
-    - cron: '0 22 * * 2'
+  workflow_dispatch:
 
 jobs:
   analyse:

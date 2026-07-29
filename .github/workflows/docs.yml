@@ -1,8 +1,9 @@
 name: "Build Manual"
+# Upstream workflow, disabled in this fork: .github/workflows/release.yml is
+# the only thing that runs per commit here. Kept intact (minus its triggers)
+# so merges from mapeditor/tiled stay clean; run it by hand if you need it.
 on:
-  pull_request:
-    paths:
-    - 'docs/**'
+  workflow_dispatch:
 
 jobs:
   docs:

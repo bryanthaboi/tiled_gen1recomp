@@ -81,6 +81,27 @@ TiledQtGuiApplication {
         qbs.installDir: "Tiled.app/Contents/Resources"
     }
 
+    // Extensions shipped inside the installation. ScriptManager looks for
+    // these next to the executable (see mBundledExtensionsPath), using the
+    // same per-platform layout as the translations product.
+    Group {
+        name: "Bundled extensions"
+        prefix: "../../extensions/gen1-mod-export/"
+        files: [
+            "*.js",
+            "*.md",
+        ]
+        qbs.install: true
+        qbs.installDir: {
+            if (project.windowsLayout)
+                return "extensions/gen1-mod-export"
+            else if (qbs.targetOS.contains("macos"))
+                return "Tiled.app/Contents/Extensions/gen1-mod-export"
+            else
+                return "share/tiled/extensions/gen1-mod-export"
+        }
+    }
+
     Group {
         name: "macOS (Info.plist and icons)"
         condition: qbs.targetOS.contains("macos")

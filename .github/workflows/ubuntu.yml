@@ -1,22 +1,10 @@
 name: Compile on Ubuntu
 
+# Upstream workflow, disabled in this fork: .github/workflows/release.yml is
+# the only thing that runs per commit here. Kept intact (minus its triggers)
+# so merges from mapeditor/tiled stay clean; run it by hand if you need it.
 on:
-  push:
-    branches:
-      - master
-    tags:
-      - '*'
-    paths-ignore:
-    - 'docs/**'
-    - '**.md'
-    - 'appveyor.yml'
-    - '.travis.yml'
-  pull_request:
-    paths-ignore:
-    - 'docs/**'
-    - '**.md'
-    - 'appveyor.yml'
-    - '.travis.yml'
+  workflow_dispatch:
 
 jobs:
   build:

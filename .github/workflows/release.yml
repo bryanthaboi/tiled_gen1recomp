@@ -1,0 +1,565 @@
+name: Release
+
+# Builds the macOS, Windows and Linux desktop apps on every commit to master
+# and publishes them as a GitHub Release, the same way the port repo
+# (pokemon-gen1-recomp-project) does. No Android, no Anbernic -- Tiled is a
+# desktop Qt app.
+#
+# Versioning:
+#   - First ever release is 0.1.0.
+#   - Every push to master auto-increments the patch: 0.1.0 -> 0.1.1 -> ...
+#     -> 0.1.99, then rolls over to 0.2.0 and keeps going.
+#   - To force a specific version, either:
+#       * run this workflow manually (Actions tab) and type it into "version", or
+#       * put "[release X.Y.Z]" anywhere in the commit message.
+#
+# Tags are prefixed "gen1-v", not "v": this is a fork, and upstream's own
+# v1.x.y tags are in this repository's history. Keeping a separate prefix
+# stops the auto-increment from ever walking upstream's version line and
+# stops our releases from colliding with an upstream tag we later pull in.
+#
+# Each build bundles extensions/gen1-mod-export into the installation itself
+# (see the "Bundled extensions" group in src/tiledapp/tiledapp.qbs), so the
+# export formats are available without per-project scripting consent.
+
+on:
+  push:
+    branches: [master]
+    # Workflow and docs-only changes don't ship anything to users, so they
+    # don't earn a release. A push touching these *and* real source still
+    # releases; only pushes confined entirely to these paths are skipped.
+    paths-ignore:
+      - '.github/**'
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact version to release (e.g. 0.2.0). Leave blank to auto-increment."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  QBS_VERSION: 3.2.0
+  CMAKE_VERSION: 3.31
+  # These are real releases, not snapshots: no news feed, no snapshot
+  # update-check channel (see tiled.qbs and newversionchecker.cpp).
+  TILED_RELEASE: 'true'
+  TILED_SNAPSHOT: 'false'
+
+jobs:
+  version:
+    name: Determine version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      prev_tag: ${{ steps.ver.outputs.prev_tag }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Determine version
+      id: ver
+      env:
+        DISPATCH_VERSION: ${{ github.event.inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        semver_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+        # 1) Explicit override from a manual run.
+        override=""
+        if [ -n "${DISPATCH_VERSION:-}" ]; then
+          override="$DISPATCH_VERSION"
+        else
+          # 2) Override from the commit message: [release X.Y.Z]
+          msg="$(git log -1 --pretty=%B || true)"
+          tag_ver="$(printf '%s' "$msg" | sed -n -E 's/.*\[release[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/p' | head -1)"
+          if [ -n "$tag_ver" ]; then
+            override="$tag_ver"
+          fi
+        fi
+
+        if [ -n "$override" ]; then
+          if ! printf '%s' "$override" | grep -Eq "$semver_re"; then
+            echo "::error::Invalid version override '$override' (expected X.Y.Z)"
+            exit 1
+          fi
+          version="$override"
+          echo "Using override version: $version"
+        else
+          # 3) Auto-increment from the highest existing gen1-vX.Y.Z tag.
+          latest="$(git tag -l 'gen1-v*' \
+            | sed -E 's/^gen1-v//' \
+            | grep -E "$semver_re" \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1 || true)"
+
+          if [ -z "$latest" ]; then
+            version="0.1.0"
+            echo "No existing release tag; starting at $version"
+          else
+            major="${latest%%.*}"
+            rest="${latest#*.}"
+            minor="${rest%%.*}"
+            patch="${rest##*.}"
+            patch=$((patch + 1))
+            if [ "$patch" -gt 99 ]; then
+              minor=$((minor + 1))
+              patch=0
+            fi
+            version="${major}.${minor}.${patch}"
+            echo "Latest was $latest; next is $version"
+          fi
+        fi
+
+        tag="gen1-v${version}"
+        if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+          echo "::error::Tag $tag already exists. Pick a different version."
+          exit 1
+        fi
+        if gh release view "$tag" >/dev/null 2>&1; then
+          echo "::error::Release $tag already exists. Pick a different version."
+          exit 1
+        fi
+
+        # Previous release tag, for the release notes range. Empty on the
+        # very first release.
+        prev_tag="$(git tag -l 'gen1-v*' --sort=-v:refname | head -1 || true)"
+
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "prev_tag=$prev_tag" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux (AppImage)
+    runs-on: ubuntu-22.04
+    needs: version
+
+    env:
+      TILED_VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Checkout qaseprite
+      uses: actions/checkout@v7
+      with:
+        repository: mapeditor/qaseprite
+        path: qaseprite
+        ref: '1.0.3'
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install \
+          libfreetype-dev \
+          libfuse2 \
+          libharfbuzz-dev \
+          libpixman-1-dev \
+          libxcursor-dev \
+          libxi-dev \
+          libzstd-dev \
+          zlib1g-dev
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.11.1
+        arch: linux_gcc_64
+        modules: "qtimageformats qtshadertools"
+        tools: 'tools_qtcreator'
+        setup-python: false
+        cache: true
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1
+      with:
+        max-size: 250M
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '${{ env.CMAKE_VERSION }}'
+
+    - name: Setup Qbs
+      run: |
+        qbs --version
+        qbs setup-toolchains --detect
+        qbs config defaultProfile x86_64-linux-gnu-gcc-11
+
+    - name: Install qaseprite plugin
+      working-directory: qaseprite
+      run: |
+        ./update-submodules.sh --minimal
+        cmake -B build -DCMAKE_BUILD_TYPE=Release \
+          -DUSE_SHARED_ZLIB=on \
+          -DUSE_SHARED_LIBPNG=on \
+          -DUSE_SHARED_PIXMAN=on \
+          -DUSE_SHARED_FREETYPE=on \
+          -DUSE_SHARED_HARFBUZZ=on
+        cmake --build build --config Release
+        cmake --install build --config Release
+
+    # No projects.Tiled.sentry: this fork has no Sentry project, and building
+    # it in would only produce crash reports nobody receives.
+    - name: Build Tiled
+      run: |
+        qbs install --install-root AppDir config:release qbs.installPrefix:/usr modules.cpp.compilerWrapper:ccache
+
+    - name: Verify bundled extension is installed
+      run: |
+        test -f AppDir/usr/share/tiled/extensions/gen1-mod-export/gen1-export-mod.js
+        ls -l AppDir/usr/share/tiled/extensions/gen1-mod-export/
+
+    - name: Build AppImage
+      run: |
+        cp LICENSE* COPYING *md AppDir/
+        wget --no-verbose "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+        wget --no-verbose "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
+        chmod +x linuxdeploy*.AppImage
+        export EXTRA_QT_PLUGINS=svg
+        export LD_LIBRARY_PATH=${QT_ROOT_DIR}/lib:$PWD/AppDir/usr/lib
+        export OUTPUT=Tiled-${{ needs.version.outputs.version }}_Linux_x86_64.AppImage
+        # Avoid shipping the debug information
+        find AppDir -name \*.debug -delete
+        ./linuxdeploy-x86_64.AppImage --appdir AppDir --custom-apprun=dist/linux/AppRun --exclude-library "*libpython3*" --plugin qt --output appimage
+
+    - name: Upload Tiled.AppImage
+      uses: actions/upload-artifact@v6
+      with:
+        name: linux-appimage
+        path: Tiled-${{ needs.version.outputs.version }}_Linux_x86_64.AppImage
+
+  macos:
+    name: macOS (universal, 13+)
+    runs-on: macos-26
+    needs: version
+
+    env:
+      TILED_VERSION: ${{ needs.version.outputs.version }}
+      SIGNING_ENABLED: ${{ secrets.SIGNING_ENABLED }}
+      MACOSX_DEPLOYMENT_TARGET: "13"
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Checkout qaseprite
+      uses: actions/checkout@v7
+      with:
+        repository: mapeditor/qaseprite
+        path: qaseprite
+        ref: '1.0.3'
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.11.1
+        arch: clang_64
+        modules: "qtimageformats qtshadertools"
+        cache: true
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '${{ env.CMAKE_VERSION }}'
+
+    - name: Install Qbs
+      run: |
+        tarball=qbs-macos-$(uname -m)-${{ env.QBS_VERSION }}.tar.gz
+        curl -fLO "https://download.qt.io/official_releases/qbs/${{ env.QBS_VERSION }}/${tarball}"
+        mkdir -p "${HOME}/qbs"
+        tar xzf "${tarball}" -C "${HOME}/qbs"
+        dirname "$(find "${HOME}/qbs" -name qbs -type f | head -n1)" >> "$GITHUB_PATH"
+
+    - name: Setup Qbs
+      run: |
+        qbs --version
+        qbs setup-toolchains --detect
+        qbs config defaultProfile xcode
+
+    - name: Build Zstandard
+      run: |
+        git clone --depth 1 -b release https://github.com/facebook/zstd.git
+        pushd zstd/lib
+        CFLAGS="-arch arm64 -arch x86_64" make libzstd.a
+        popd
+
+    - name: Install qaseprite plugin
+      working-directory: qaseprite
+      run: |
+        ./update-submodules.sh --no-zlib
+        cmake -B build -DCMAKE_BUILD_TYPE=Release \
+          -DUSE_SHARED_ZLIB=on \
+          -DCMAKE_OSX_ARCHITECTURES='x86_64;arm64'
+        cmake --build build --config Release
+        sudo cmake --install build --config Release
+
+    - name: Build Tiled
+      run: |
+        qbs install --install-root install config:release \
+          qbs.architectures:x86_64,arm64 \
+          qbs.installPrefix:"" \
+          projects.Tiled.staticZstd:true \
+          products.python.condition:false
+
+    - name: Verify bundled extension is installed
+      run: |
+        test -f install/Tiled.app/Contents/Extensions/gen1-mod-export/gen1-export-mod.js
+        ls -l install/Tiled.app/Contents/Extensions/gen1-mod-export/
+
+    - name: Deploy Qt
+      run: |
+        macdeployqt install/Tiled.app -verbose=2
+        rm -f install/Tiled.app/Contents/PlugIns/tls/libqopensslbackend.dylib
+        pushd install
+        ruby ../dist/macos/fixup-install-names.rb
+
+    # Signing is optional: without the secrets configured the app is ad-hoc
+    # signed instead, which still runs locally but shows Gatekeeper warnings
+    # on other machines.
+    - name: Create Certificate File
+      id: certificateFile
+      if: env.SIGNING_ENABLED == 'true'
+      uses: timheuer/base64-to-file@v2
+      with:
+        fileName: 'certificate.p12'
+        encodedString: ${{ secrets.MACOS_CERTIFICATE }}
+
+    - name: Import Certificate
+      if: env.SIGNING_ENABLED == 'true'
+      run: |
+        security create-keychain -p ${{ secrets.KEYCHAIN_PWD }} tiled-gen1
+        security default-keychain -s tiled-gen1
+        security unlock-keychain -p ${{ secrets.KEYCHAIN_PWD }} tiled-gen1
+        security -q import ${{ steps.certificateFile.outputs.filePath }} -f pkcs12 -k tiled-gen1 -P ${{ secrets.MACOS_CERTIFICATE_PWD }} -T /usr/bin/codesign -x
+        security set-key-partition-list -S 'apple-tool:,apple:' -s -k ${{ secrets.KEYCHAIN_PWD }} tiled-gen1
+
+    - name: Sign, Notarize & Staple
+      if: env.SIGNING_ENABLED == 'true'
+      run: |
+        codesign --deep --force --verify --verbose --sign "${{ secrets.MACOS_SIGNING_IDENTITY }}" --options runtime --entitlements src/tiledapp/app.entitlements install/Tiled.app
+        ditto -c -k --sequesterRsrc --keepParent install/Tiled.app Tiled_for_notarization.zip
+        xcrun notarytool submit --apple-id ${{ secrets.NOTARIZATION_USERNAME }} --password ${{ secrets.NOTARIZATION_PASSWORD }} --team-id ${{ secrets.NOTARIZATION_TEAM }} --wait Tiled_for_notarization.zip
+        xcrun stapler staple install/Tiled.app
+
+    - name: Ad-hoc sign
+      if: env.SIGNING_ENABLED != 'true'
+      run: |
+        codesign --deep --force --sign - install/Tiled.app
+
+    - name: Create Archive
+      run: |
+        ditto -c -k --sequesterRsrc --keepParent install/Tiled.app Tiled-${{ needs.version.outputs.version }}_macOS.zip
+
+    - name: Upload Tiled.app
+      uses: actions/upload-artifact@v6
+      with:
+        name: macos-app
+        path: Tiled-${{ needs.version.outputs.version }}_macOS.zip
+
+    - name: Clean up signing keychain
+      if: always()
+      run: security delete-keychain tiled-gen1 2>/dev/null || true
+
+  windows:
+    name: Windows (64-bit)
+    runs-on: windows-latest
+    needs: version
+
+    env:
+      TILED_VERSION: ${{ needs.version.outputs.version }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Checkout qaseprite
+      uses: actions/checkout@v7
+      with:
+        repository: mapeditor/qaseprite
+        path: qaseprite
+        ref: '1.0.3'
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.11.1
+        arch: win64_mingw
+        modules: "qtimageformats qtshadertools"
+        tools: "tools_mingw1310,qt.tools.win64_mingw1310"
+        # aqtinstall 3.3.0 does not yet support the changed repository
+        # layout of Qt 6.11 on Windows
+        aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@9e49c82edc6d946db376dec907cca5b4b486eec5'
+        setup-python: false
+        cache: true
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '${{ env.CMAKE_VERSION }}'
+
+    - name: Install Qbs
+      run: |
+        curl -fLO https://download.qt.io/official_releases/qbs/${{ env.QBS_VERSION }}/qbs.${{ env.QBS_VERSION }}.nupkg
+        choco install -y qbs --version ${{ env.QBS_VERSION }} --source .
+
+    - name: Setup Qbs
+      run: |
+        export IQTA_TOOLS="${IQTA_TOOLS//D:/\/d}"
+        export IQTA_TOOLS="${IQTA_TOOLS//\\/\/}"
+        export QT_ROOT_DIR="${QT_ROOT_DIR//D:/\/d}"
+        export QT_ROOT_DIR="${QT_ROOT_DIR//\\/\/}"
+        qbs setup-toolchains ${IQTA_TOOLS}/mingw1310_64/bin/*-w64-mingw32-gcc.exe mingw
+        qbs setup-qt ${QT_ROOT_DIR}/bin/qmake.exe qt
+        qbs config defaultProfile qt
+
+    - name: Build Zstandard
+      run: |
+        git clone --depth 1 -b release https://github.com/facebook/zstd.git
+        pushd zstd/lib
+        CC=gcc mingw32-make -j2 libzstd.a
+        popd
+
+    - name: Install qaseprite plugin
+      working-directory: qaseprite
+      run: |
+        ./update-submodules.sh
+        pushd aseprite/laf
+        patch -p1 < ../../laf-msvc-dynamic-runtime.patch
+        popd
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -G "MinGW Makefiles"
+        cmake --build build --config Release
+        cmake --install build --config Release
+
+    - name: Build Tiled
+      run: |
+        # MSI ProductVersion must keep increasing for upgrades to work, and
+        # it is unrelated to the release version.
+        export TILED_MSI_VERSION=1.4.${GITHUB_RUN_NUMBER}
+        qbs build config:release projects.Tiled.windowsInstaller:true projects.Tiled.staticZstd:true
+        mv release/installer*/Tiled-*.msi ./Tiled-${{ needs.version.outputs.version }}_Windows_x86_64.msi
+
+    - name: Verify bundled extension is installed
+      run: |
+        test -f release/install-root/extensions/gen1-mod-export/gen1-export-mod.js
+        ls -l release/install-root/extensions/gen1-mod-export/
+
+    - name: Create portable archive
+      run: |
+        pushd release/install-root
+        7z a -tzip ../../Tiled-${{ needs.version.outputs.version }}_Windows_x86_64.zip .
+        popd
+
+    - name: Upload Windows packages
+      uses: actions/upload-artifact@v6
+      with:
+        name: windows-packages
+        path: |
+          Tiled-${{ needs.version.outputs.version }}_Windows_x86_64.msi
+          Tiled-${{ needs.version.outputs.version }}_Windows_x86_64.zip
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [version, linux, macos, windows]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v7
+      with:
+        path: artifacts
+
+    - name: Stage release assets
+      run: |
+        set -euo pipefail
+        outdir="dist/release"
+        rm -rf "$outdir"
+        mkdir -p "$outdir"
+        find artifacts -type f \( -name '*.AppImage' -o -name '*.zip' -o -name '*.msi' \) \
+          -exec cp {} "$outdir/" \;
+        ls -lh "$outdir"
+
+        # Checksums for every staged asset. The sums file is named outside
+        # the Tiled-* glob, so it never lists itself.
+        (cd "$outdir" && shasum -a 256 Tiled-* > sha256sums.txt)
+        cat "$outdir/sha256sums.txt"
+
+    - name: Publish GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PREV_TAG: ${{ needs.version.outputs.prev_tag }}
+      run: |
+        set -euo pipefail
+        v="${{ needs.version.outputs.version }}"
+        tag="${{ needs.version.outputs.tag }}"
+
+        notes="Download the correct version for your computer below."
+        notes+=$'\n\nEach build bundles the `gen1-mod-export` extension, so '
+        notes+=$'*File > Export Gen1 Mod...* is available out of the box.'
+
+        # Issues this release closes, per GitHub's own "closing issues" links
+        # (works for squash, rebase, and merge commits alike). Only attempted
+        # when there is a previous release to diff against -- on the very
+        # first release the range would be the entire upstream history.
+        if [ -n "${PREV_TAG:-}" ]; then
+          closed=""
+          for pr in $(git log --pretty=%H "${PREV_TAG}..$GITHUB_SHA" \
+                        | xargs -I{} gh api "repos/$GITHUB_REPOSITORY/commits/{}/pulls" \
+                              --jq '.[].number' 2>/dev/null \
+                        | sort -un || true); do
+            closed+="$(gh api graphql \
+              -f owner="${GITHUB_REPOSITORY%/*}" \
+              -f name="${GITHUB_REPOSITORY#*/}" \
+              -F pr="$pr" \
+              -f query='
+                query($owner:String!, $name:String!, $pr:Int!) {
+                  repository(owner:$owner, name:$name) {
+                    pullRequest(number:$pr) {
+                      closingIssuesReferences(first:50) { nodes { number title } }
+                    }
+                  }
+                }' \
+              --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[]
+                    | "- #\(.number) \(.title)"' 2>/dev/null || true)"$'\n'
+          done
+          closed="$(printf '%s' "$closed" | grep . | sort -t'#' -k2 -n || true)"
+          if [ -n "$closed" ]; then
+            notes+=$'\n\n## Issues closed\n\n'"$closed"
+          fi
+        fi
+
+        printf 'Release notes:\n%s\n' "$notes"
+
+        gh release create "$tag" \
+          --target "$GITHUB_SHA" \
+          --title "$v" \
+          --notes "$notes" \
+          dist/release/*
+
+        echo "Published release $tag"
